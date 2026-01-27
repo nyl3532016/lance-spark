@@ -13,6 +13,7 @@
  */
 package org.lance.spark;
 
+import org.lance.index.DistanceType;
 import org.lance.ipc.Query;
 
 import org.junit.jupiter.api.Assertions;
@@ -30,8 +31,11 @@ public class LanceSparkReadOptionsJsonTest {
     builder.setColumn("vector_col");
     builder.setRefineFactor(2);
     builder.setKey(new float[] {1.0f, 2.0f, 3.0f});
-    // builder.setMinimumNprobes(5); // Assuming this might exist or just skip if
-    // unsure
+    builder.setMinimumNprobes(5);
+    builder.setMaximumNprobes(20);
+    builder.setEf(100);
+    builder.setDistanceType(DistanceType.L2);
+    builder.setUseIndex(true);
 
     Query query = builder.build();
 
@@ -53,11 +57,26 @@ public class LanceSparkReadOptionsJsonTest {
     Assertions.assertNotNull(deserializedQuery);
     Assertions.assertEquals(query.getK(), deserializedQuery.getK());
     Assertions.assertEquals(query.getColumn(), deserializedQuery.getColumn());
+
     // Check RefineFactor (Optional)
     Assertions.assertTrue(deserializedQuery.getRefineFactor().isPresent());
     Assertions.assertEquals(Integer.valueOf(2), deserializedQuery.getRefineFactor().get());
 
     Assertions.assertArrayEquals(query.getKey(), deserializedQuery.getKey());
+
+    // Check new fields
+    Assertions.assertEquals(query.getMinimumNprobes(), deserializedQuery.getMinimumNprobes());
+
+    Assertions.assertTrue(deserializedQuery.getMaximumNprobes().isPresent());
+    Assertions.assertEquals(Integer.valueOf(20), deserializedQuery.getMaximumNprobes().get());
+
+    Assertions.assertTrue(deserializedQuery.getEf().isPresent());
+    Assertions.assertEquals(Integer.valueOf(100), deserializedQuery.getEf().get());
+
+    Assertions.assertTrue(deserializedQuery.getDistanceType().isPresent());
+    Assertions.assertEquals(DistanceType.L2, deserializedQuery.getDistanceType().get());
+
+    Assertions.assertEquals(query.isUseIndex(), deserializedQuery.isUseIndex());
   }
 
   @Test
