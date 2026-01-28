@@ -111,7 +111,9 @@ public class LanceFragmentScanner implements AutoCloseable {
       scanOptions.batchSize(readOptions.getBatchSize());
       scanOptions.withRowId(getWithRowId(inputPartition.getSchema()));
       scanOptions.withRowAddress(getWithRowAddress(inputPartition.getSchema()));
-      scanOptions.nearest(readOptions.getNearest());
+      if (readOptions.getNearest() != null) {
+        scanOptions.nearest(readOptions.getNearest());
+      }
       if (inputPartition.getLimit().isPresent()) {
         scanOptions.limit(inputPartition.getLimit().get());
       }
@@ -221,7 +223,9 @@ public class LanceFragmentScanner implements AutoCloseable {
 
     @Override
     public boolean equals(Object o) {
-      if (o == null || getClass() != o.getClass()) return false;
+      if (o == null || getClass() != o.getClass()) {
+        return false;
+      }
       CacheKey cacheKey = (CacheKey) o;
       return Objects.equals(readOptions, cacheKey.readOptions)
           && Objects.equals(scanId, cacheKey.scanId);
