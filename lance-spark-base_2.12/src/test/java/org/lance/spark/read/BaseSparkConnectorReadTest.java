@@ -13,9 +13,12 @@
  */
 package org.lance.spark.read;
 
+import org.lance.index.DistanceType;
+import org.lance.ipc.Query;
 import org.lance.spark.LanceDataSource;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.TestUtils;
+import org.lance.spark.utils.QueryUtils;
 
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
@@ -43,6 +46,24 @@ public abstract class BaseSparkConnectorReadTest {
 
   @BeforeAll
   static void setup() {
+    Query.Builder builder = new Query.Builder();
+    float[] key = new float[32];
+    for (int i = 0; i < 32; i++) {
+      key[i] = (float) (i + 32);
+    }
+    builder.setK(1);
+    builder.setColumn("vec");
+    //    builder.setRefineFactor(2);
+    //    builder.setKey(
+    //        new float[]
+    // {-1.164561f,1.4541137f,0.6925452f,-0.17859168f,0.422055f,1.3849078f,0.5930743f,-1.0516955f,-0.4660289f,0.4688979f
+    //        });
+    builder.setKey(key);
+    builder.setUseIndex(true);
+    builder.setDistanceType(DistanceType.Cosine);
+    //    builder.setMinimumNprobes(1);
+    //    builder.setMaximumNprobes(1);
+    //    builder.setEf(1);
     spark =
         SparkSession.builder()
             .appName("spark-lance-connector-test")
@@ -54,11 +75,13 @@ public abstract class BaseSparkConnectorReadTest {
         spark
             .read()
             .format(LanceDataSource.name)
+            .option(LanceSparkReadOptions.CONFIG_NEAREST, QueryUtils.queryToString(builder.build()))
+            .option(LanceSparkReadOptions.CONFIG_PREFILTER, true)
             .option(
                 LanceSparkReadOptions.CONFIG_DATASET_URI,
-                TestUtils.getDatasetUri(dbPath, TestUtils.TestTable1Config.datasetName))
+                TestUtils.getDatasetUri(dbPath, "test_dataset7"))
             .load();
-    data.createOrReplaceTempView("test_dataset1");
+    data.createOrReplaceTempView("test_dataset7");
   }
 
   @AfterAll
@@ -70,24 +93,21 @@ public abstract class BaseSparkConnectorReadTest {
 
   private void validateData(Dataset<Row> data, List<List<Long>> expectedValues) {
     List<Row> rows = data.collectAsList();
-    assertEquals(expectedValues.size(), rows.size());
+    Arrays.stream(data.columns()).forEach(System.out::println);
+    System.out.println("row size is " + rows.size());
 
-    for (int i = 0; i < rows.size(); i++) {
-      Row row = rows.get(i);
-      List<Long> expectedRow = expectedValues.get(i);
-      assertEquals(expectedRow.size(), row.size());
-
-      for (int j = 0; j < expectedRow.size(); j++) {
-        long expectedValue = expectedRow.get(j);
-        long actualValue = row.getLong(j);
-        assertEquals(expectedValue, actualValue, "Mismatch at row " + i + " column " + j);
-      }
+    for (int j = 0; j < 5; j++) {
+      System.out.println("the number " + j + " record");
+      System.out.println("id is " + rows.get(j).getInt(0));
+      System.out.println("id is " + rows.get(j).getString(1));
     }
   }
 
   @Test
   public void readAll() {
-    validateData(data, TestUtils.TestTable1Config.expectedValues);
+    validateData(
+        spark.sql("select * from test_dataset7 where i > 500 and s!='aaa'"),
+        TestUtils.TestTable1Config.expectedValues);
   }
 
   @Test

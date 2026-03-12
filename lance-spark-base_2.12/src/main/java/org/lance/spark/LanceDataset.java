@@ -155,6 +155,9 @@ public class LanceDataset implements SupportsRead, SupportsWrite, SupportsMetada
   public ScanBuilder newScanBuilder(CaseInsensitiveStringMap caseInsensitiveStringMap) {
     // Merge scan-time options with the existing read options
     LanceSparkReadOptions scanOptions = readOptions;
+    System.out.println("niuyulin in newScanBuilder");
+    System.out.println(scanOptions.toReadOptions().toString());
+    caseInsensitiveStringMap.forEach((k, v) -> System.out.println(k + "=>" + v));
     if (!caseInsensitiveStringMap.isEmpty()) {
       Map<String, String> mergedOptions = new HashMap<>(readOptions.getStorageOptions());
       mergedOptions.putAll(caseInsensitiveStringMap.asCaseSensitiveMap());
@@ -166,6 +169,11 @@ public class LanceDataset implements SupportsRead, SupportsWrite, SupportsMetada
               .fromOptions(mergedOptions)
               .build();
     }
+
+    System.out.println("niuyulin after newScanBuilder");
+    System.out.println(scanOptions.getNearest());
+    System.out.println(scanOptions.getStorageOptions());
+
     return new LanceScanBuilder(
         sparkSchema, scanOptions, initialStorageOptions, namespaceImpl, namespaceProperties);
   }

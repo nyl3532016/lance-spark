@@ -108,9 +108,11 @@ public class LanceFragmentScanner implements AutoCloseable {
       if (inputPartition.getWhereCondition().isPresent()) {
         scanOptions.filter(inputPartition.getWhereCondition().get());
       }
+
       scanOptions.batchSize(readOptions.getBatchSize());
       scanOptions.withRowId(getWithRowId(inputPartition.getSchema()));
       scanOptions.withRowAddress(getWithRowAddress(inputPartition.getSchema()));
+      scanOptions.prefilter(readOptions.isPrefilter());
       if (readOptions.getNearest() != null) {
         scanOptions.nearest(readOptions.getNearest());
       }
@@ -125,8 +127,31 @@ public class LanceFragmentScanner implements AutoCloseable {
       }
       boolean withFragmentId =
           inputPartition.getSchema().getFieldIndex(LanceConstant.FRAGMENT_ID).nonEmpty();
-      return new LanceFragmentScanner(
-          fragment.newScan(scanOptions.build()), fragmentId, withFragmentId, inputPartition);
+
+      LanceScanner lancescanner = fragment.newScan(scanOptions.build());
+      System.out.println("niuyulin in LanceFragmentScanner create");
+      // Manually print ScanOptions details
+      ScanOptions opts = scanOptions.build();
+      System.out.println("=== Lance Scan Options Debug ===");
+      System.out.println("Columns: " + opts.getColumns());
+      System.out.println("Filter: " + opts.getFilter());
+      System.out.println("Limit: " + opts.getLimit());
+      System.out.println("Offset: " + opts.getOffset());
+      System.out.println("BatchSize: " + opts.getBatchSize());
+      System.out.println("WithRowId: " + opts.isWithRowId());
+      System.out.println("WithRowAddress: " + opts.isWithRowAddress());
+      System.out.println("getColumnOrderings: " + opts.getColumnOrderings());
+
+      if (inputPartition.getReadOptions().getNearest() != null) {
+        System.out.println(
+            "Nearest (InputPartition): " + inputPartition.getReadOptions().getNearest().toString());
+      }
+
+      System.out.println("Nearest (InputPartition): " + opts.getNearest().toString());
+
+      System.out.println("================================");
+
+      return new LanceFragmentScanner(lancescanner, fragmentId, withFragmentId, inputPartition);
     } catch (Throwable throwable) {
       throw new RuntimeException(throwable);
     }

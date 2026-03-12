@@ -35,7 +35,7 @@ public class LanceSparkReadOptionsJsonTest {
     builder.setMaximumNprobes(20);
     builder.setEf(100);
     builder.setDistanceType(DistanceType.L2);
-    builder.setUseIndex(true);
+    builder.setUseIndex(false);
 
     Query query = builder.build();
 
@@ -73,8 +73,8 @@ public class LanceSparkReadOptionsJsonTest {
     Assertions.assertTrue(deserializedQuery.getEf().isPresent());
     Assertions.assertEquals(Integer.valueOf(100), deserializedQuery.getEf().get());
 
-    Assertions.assertTrue(deserializedQuery.getDistanceType().isPresent());
-    Assertions.assertEquals(DistanceType.L2, deserializedQuery.getDistanceType().get());
+    Assertions.assertNotNull(deserializedQuery.getDistanceType());
+    Assertions.assertEquals(DistanceType.L2.toString(), deserializedQuery.getDistanceType());
 
     Assertions.assertEquals(query.isUseIndex(), deserializedQuery.isUseIndex());
   }

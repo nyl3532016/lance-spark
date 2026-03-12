@@ -38,6 +38,7 @@ public class LanceSplit implements Serializable {
 
   public static List<LanceSplit> generateLanceSplits(LanceSparkReadOptions readOptions) {
     try (Dataset dataset = openDataset(readOptions)) {
+      System.out.println("niuyulin total split is " + dataset.getFragments().size());
       return dataset.getFragments().stream()
           .map(Fragment::getId)
           .map(id -> new LanceSplit(Collections.singletonList(id)))
@@ -53,6 +54,9 @@ public class LanceSplit implements Serializable {
           .tableId(readOptions.getTableId())
           .build();
     } else {
+      System.out.println("niuyulin in openDataset");
+      System.out.println(readOptions.toReadOptions().toString());
+
       return Dataset.open()
           .allocator(LanceRuntime.allocator())
           .uri(readOptions.getDatasetUri())

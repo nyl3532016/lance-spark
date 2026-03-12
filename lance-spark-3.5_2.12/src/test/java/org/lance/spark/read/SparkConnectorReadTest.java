@@ -13,4 +13,11 @@
  */
 package org.lance.spark.read;
 
-public class SparkConnectorReadTest extends BaseSparkConnectorReadTest {}
+import org.junit.jupiter.api.Test;
+
+public class SparkConnectorReadTest extends BaseSparkConnectorReadTest {
+  @Test
+  public void readAll() {
+    super.readAll();
+  }
+}

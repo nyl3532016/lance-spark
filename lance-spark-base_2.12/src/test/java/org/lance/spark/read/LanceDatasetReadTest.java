@@ -15,11 +15,13 @@ package org.lance.spark.read;
 
 import org.lance.Dataset;
 import org.lance.Fragment;
+import org.lance.ipc.Query;
 import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.TestUtils;
 import org.lance.spark.internal.LanceFragmentScanner;
 import org.lance.spark.utils.Optional;
+import org.lance.spark.utils.QueryUtils;
 
 import org.apache.arrow.vector.VectorSchemaRoot;
 import org.apache.arrow.vector.ipc.ArrowReader;
@@ -31,12 +33,15 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.lance.spark.TestUtils.getDatasetUri;
 
 public class LanceDatasetReadTest {
   @Test
@@ -83,6 +88,82 @@ public class LanceDatasetReadTest {
               DataTypes.createStructField("b", DataTypes.LongType, true),
               DataTypes.createStructField("c", DataTypes.LongType, true)
             }));
+  }
+
+  @Test
+  public void getFragmentScannerVector() throws IOException {
+    List<List<Object>> expectedValues =
+        Arrays.asList(Arrays.asList(0L, 0L, 0L, 0L), Arrays.asList(1L, 2L, 3L, -1L));
+    StructType schema =
+        new StructType(
+            new StructField[] {
+              DataTypes.createStructField("i", DataTypes.IntegerType, true),
+              DataTypes.createStructField("s", DataTypes.StringType, true),
+              DataTypes.createStructField(
+                  "vec", DataTypes.createArrayType(DataTypes.FloatType), true),
+            });
+
+    validateFragment1(expectedValues, 0, schema);
+  }
+
+  public void validateFragment1(List<List<Object>> expectedValues, int fragment, StructType schema)
+      throws IOException {
+
+    LanceSparkReadOptions readOptions;
+    Query.Builder builder = new Query.Builder();
+    float[] key = new float[30];
+    for (int i = 0; i < 30; i++) {
+      key[i] = (float) (i + 30);
+    }
+    builder.setK(5);
+    builder.setColumn("vec");
+    //    builder.setRefineFactor(2);
+    //    builder.setKey(
+    //        new float[]
+    // {-1.164561f,1.4541137f,0.6925452f,-0.17859168f,0.422055f,1.3849078f,0.5930743f,-1.0516955f,-0.4660289f,0.4688979f
+    //        });
+    builder.setKey(key);
+    builder.setUseIndex(false);
+
+    String datasetUri = getDatasetUri(TestUtils.TestTable1Config.dbPath, "test_dataset7");
+    Map<String, String> properties = new HashMap<>();
+
+    properties.put(LanceSparkReadOptions.CONFIG_NEAREST, QueryUtils.queryToString(builder.build()));
+    readOptions = LanceSparkReadOptions.from(properties, datasetUri);
+
+    System.out.println("niuyulin print readOptions");
+    System.out.println(datasetUri);
+
+    try (LanceFragmentScanner scanner =
+        LanceFragmentScanner.create(
+            fragment,
+            new LanceInputPartition(
+                schema,
+                0 /* partitionId */,
+                new LanceSplit(Arrays.asList(fragment)),
+                readOptions,
+                Optional.empty() /* whereCondition */,
+                Optional.empty() /* limit */,
+                Optional.empty() /* offset */,
+                Optional.empty() /* topNSortOrders */,
+                Optional.empty() /* pushedAggregation */,
+                "validateFragment" /* scanId */,
+                null /* initialStorageOptions */,
+                null /* namespaceImpl */,
+                null /* namespaceProperties */))) {
+      try (ArrowReader reader = scanner.getArrowReader()) {
+        VectorSchemaRoot root = reader.getVectorSchemaRoot();
+        assertNotNull(root);
+
+        while (reader.loadNextBatch()) {
+          for (int i = 0; i < root.getRowCount(); i++) {
+            for (int j = 0; j < root.getFieldVectors().size(); j++) {
+              System.out.println(root.getFieldVectors().get(j).getObject(i));
+            }
+          }
+        }
+      }
+    }
   }
 
   private Optional<StructType> getSchema(LanceSparkReadOptions readOptions) {
@@ -144,5 +225,6 @@ public class LanceDatasetReadTest {
     }
   }
 
-  // TODO test_dataset4 [UNSUPPORTED_ARROWTYPE] Unsupported arrow type FixedSizeList(128).
+  // TODO test_dataset4 [UNSUPPORTED_ARROWTYPE] Unsupported arrow type
+  // FixedSizeList(128).
 }
