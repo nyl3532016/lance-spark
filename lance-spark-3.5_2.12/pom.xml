@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.lance</groupId>
         <artifactId>lance-spark-root</artifactId>
-        <version>0.2.0</version>
+        <version>0.2.1-cmit</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 

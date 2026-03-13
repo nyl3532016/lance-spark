@@ -1,10 +1,8 @@
 [tool.bumpversion]
-current_version = "0.2.0"
-parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(-(?P<pre_label>alpha|beta|rc)\\.(?P<pre_n>\\d+))?"
-serialize = [
-    "{major}.{minor}.{patch}-{pre_label}.{pre_n}",
-    "{major}.{minor}.{patch}"
-]
+current_version = "0.2.1-cmit"
+# 示例：支持 0.2.1-cmit 这种格式的配置
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?P<releaselevel>-\\w+)?"
+serialize = ["{major}.{minor}.{patch}{releaselevel}", "{major}.{minor}.{patch}"]
 search = "{current_version}"
 replace = "{new_version}"
 regex = false
