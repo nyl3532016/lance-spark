@@ -45,7 +45,11 @@ public abstract class BaseSparkConnectorReadWithVectorSearchTest {
 
   @BeforeAll
   static void setup() {
+    String catalogName = "lance_test";
+    String tableName = "test_dataset5";
+    String fullTable = catalogName + ".my_ns." + tableName;
 
+    dbPath = TestUtils.TestTable1Config.dbPath + "/test_lance";
     Query.Builder builder = new Query.Builder();
     float[] key = new float[32];
     for (int i = 0; i < 32; i++) {
@@ -61,18 +65,20 @@ public abstract class BaseSparkConnectorReadWithVectorSearchTest {
         SparkSession.builder()
             .appName("spark-lance-connector-test")
             .master("local")
-            .config("spark.sql.catalog.lance", "org.lance.spark.LanceNamespaceSparkCatalog")
+            .config(
+                "spark.sql.catalog." + catalogName, "org.lance.spark.LanceNamespaceSparkCatalog")
+            .config(
+                "spark.sql.extensions", "org.lance.spark.extensions.LanceSparkSessionExtensions")
+            .config("spark.sql.catalog." + catalogName + ".impl", "dir")
+            .config("spark.sql.catalog." + catalogName + ".root", dbPath)
             .getOrCreate();
-    dbPath = TestUtils.TestTable1Config.dbPath;
+
     data =
         spark
             .read()
             .format(LanceDataSource.name)
             .option(LanceSparkReadOptions.CONFIG_NEAREST, QueryUtils.queryToString(builder.build()))
-            .option(
-                LanceSparkReadOptions.CONFIG_DATASET_URI,
-                TestUtils.getDatasetUri(dbPath, "test_dataset5"))
-            .load();
+            .table(fullTable);
     data.createOrReplaceTempView("test_dataset5");
   }
 
@@ -85,8 +91,9 @@ public abstract class BaseSparkConnectorReadWithVectorSearchTest {
 
   @Test
   public void validateData() {
-    Set<Integer> expectedI = new HashSet<>(Arrays.asList(1, 81, 161, 241, 321));
+    Set<Integer> expectedI = new HashSet<>(Arrays.asList(38, 54, 7, 93, 78));
     Set<Integer> actualI = new HashSet<>();
+
     List<Row> rows = data.collectAsList();
     for (int i = 0; i < rows.size(); i++) {
       actualI.add(rows.get(i).getInt(0));

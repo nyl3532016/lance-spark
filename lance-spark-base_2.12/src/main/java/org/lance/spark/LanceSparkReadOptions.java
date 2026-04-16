@@ -313,7 +313,7 @@ public class LanceSparkReadOptions implements Serializable {
         && prefilter == that.prefilter
         && batchSize == that.batchSize
         && topNPushDown == that.topNPushDown
-        && nearest == that.nearest
+        && Objects.equals(nearest, that.nearest)
         && Objects.equals(datasetUri, that.datasetUri)
         && Objects.equals(blockSize, that.blockSize)
         && Objects.equals(version, that.version)
