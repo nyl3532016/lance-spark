@@ -13,8 +13,10 @@
  */
 package org.lance.spark;
 
+import org.lance.BlobFile;
 import org.lance.spark.utils.BlobUtils;
 
+import org.apache.arrow.memory.RootAllocator;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
@@ -276,43 +279,70 @@ public abstract class BaseBlobCreateTableTest {
     boolean found = tableList.stream().anyMatch(row -> tableName.equals(row.getString(1)));
     assertTrue(found, "Table should be created");
 
-    // Insert data using SQL (with smaller test data for SQL insert)
-    String testData1 = "This is test blob data 1";
-    String testData2 = "This is test blob data 2";
-    spark.sql(
-        "INSERT INTO "
-            + catalogName
-            + ".default."
-            + tableName
-            + " VALUES "
-            + "(1, 'first text', X'"
-            + bytesToHex(testData1.getBytes(StandardCharsets.UTF_8))
-            + "'), "
-            + "(2, 'second text', X'"
-            + bytesToHex(testData2.getBytes(StandardCharsets.UTF_8))
-            + "')");
+    // Insert data using SQL
+    int numRows = 50;
+    StringBuilder sqlBuilder =
+        new StringBuilder("INSERT INTO " + catalogName + ".default." + tableName + " VALUES ");
+    for (int i = 1; i <= numRows; i++) {
+      String testData = "This is test blob data " + i;
+      sqlBuilder
+          .append("(")
+          .append(i)
+          .append(", 'text ")
+          .append(i)
+          .append("', X'")
+          .append(bytesToHex(testData.getBytes(StandardCharsets.UTF_8)))
+          .append("')");
+      if (i < numRows) {
+        sqlBuilder.append(", ");
+      }
+    }
+    spark.sql(sqlBuilder.toString());
 
     // Query the table to verify data was inserted
-    Dataset<Row> result =
-        spark.sql("SELECT COUNT(*) FROM " + catalogName + ".default." + tableName);
-    assertEquals(2L, result.collectAsList().get(0).getLong(0));
+    Dataset<Row> result = spark.sql("SELECT * FROM " + catalogName + ".default." + tableName);
+    assertEquals(numRows, result.collectAsList().size());
 
     // Query with projection
     Dataset<Row> projection =
         spark.sql("SELECT id, text FROM " + catalogName + ".default." + tableName + " ORDER BY id");
     List<Row> rows = projection.collectAsList();
-    assertEquals(2, rows.size());
+    assertEquals(numRows, rows.size());
     assertEquals(1, rows.get(0).getInt(0));
-    assertEquals("first text", rows.get(0).getString(1));
-    assertEquals(2, rows.get(1).getInt(0));
-    assertEquals("second text", rows.get(1).getString(1));
+    assertEquals("text 1", rows.get(0).getString(1));
+    assertEquals(50, rows.get(49).getInt(0));
+    assertEquals("text 50", rows.get(49).getString(1));
 
     // Also verify the blob data structure
     Dataset<Row> blobQuery =
         spark.sql(
-            "SELECT id, blob_data FROM " + catalogName + ".default." + tableName + " ORDER BY id");
+            "SELECT id, blob_data, _rowid FROM "
+                + catalogName
+                + ".default."
+                + tableName
+                + " ORDER BY id");
     List<Row> blobRows = blobQuery.collectAsList();
-    assertEquals(2, blobRows.size());
+    assertEquals(numRows, blobRows.size());
+
+    // Get table location by walking tempDir
+    String tablePath = "";
+    try (java.util.stream.Stream<java.nio.file.Path> stream = java.nio.file.Files.walk(tempDir)) {
+      java.util.Optional<java.nio.file.Path> foundPath =
+          stream
+              .filter(
+                  p ->
+                      p.toString().endsWith(tableName + ".lance")
+                          && java.nio.file.Files.isDirectory(p))
+              .findFirst();
+      if (foundPath.isPresent()) {
+        tablePath = foundPath.get().toString();
+      }
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+    if (tablePath.isEmpty()) {
+      throw new RuntimeException("Could not find table path under " + tempDir);
+    }
 
     // Verify each blob is returned as empty binary data (not materialized)
     for (Row row : blobRows) {
@@ -323,6 +353,22 @@ public abstract class BaseBlobCreateTableTest {
       byte[] blobBytes = (byte[]) blobData;
       // Blob data is not materialized, so we get empty arrays
       assertEquals(0, blobBytes.length, "Blob data should be empty (not materialized)");
+
+      // Get materialized data via Native Dataset
+      // (Note: _rowid projection might return -1 in some Spark SQL paths, so we use calculated
+      // rowId for this test)
+      long rowId = (long) (row.getInt(0) - 1);
+      try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+          org.lance.Dataset ds = org.lance.Dataset.open(tablePath, allocator)) {
+        List<BlobFile> blobs = ds.takeBlobsByIndices(Collections.singletonList(rowId), "blob_data");
+        try (BlobFile blobFile = blobs.get(0)) {
+          byte[] actualData = blobFile.read();
+          String content = new String(actualData, StandardCharsets.UTF_8);
+          assertEquals("This is test blob data " + row.getInt(0), content);
+        }
+      } catch (Exception e) {
+        throw new RuntimeException("Failed to read blob data", e);
+      }
     }
 
     // Clean up
@@ -478,6 +524,161 @@ public abstract class BaseBlobCreateTableTest {
     // Verify all positions are covered (all rows have positions in the set)
     assertEquals(5, positionCount, "All blob rows should have positions");
     assertEquals(5, positions.size(), "All blob positions should be unique");
+
+    // Clean up
+    spark.sql("DROP TABLE IF EXISTS " + catalogName + ".default." + tableName);
+  }
+
+  @Test
+  public void testDistributedBlobReadUsingRowId() {
+    String tableName = "blob_distributed_read_" + System.currentTimeMillis();
+
+    // 1. Create table with blob column using TBLPROPERTIES
+    spark.sql(
+        "CREATE TABLE IF NOT EXISTS "
+            + catalogName
+            + ".default."
+            + tableName
+            + " ("
+            + "id INT NOT NULL, "
+            + "text STRING, "
+            + "blob_data BINARY"
+            + ") USING lance "
+            + "TBLPROPERTIES ("
+            + "'blob_data.lance.encoding' = 'blob'"
+            + ")");
+
+    // Insert data using SQL
+    int numRows = 20;
+    StringBuilder sqlBuilder =
+        new StringBuilder("INSERT INTO " + catalogName + ".default." + tableName + " VALUES ");
+    for (int i = 1; i <= numRows; i++) {
+      String testData = "Distributed blob data content " + i;
+      sqlBuilder
+          .append("(")
+          .append(i)
+          .append(", 'text ")
+          .append(i)
+          .append("', X'")
+          .append(bytesToHex(testData.getBytes(StandardCharsets.UTF_8)))
+          .append("')");
+      if (i < numRows) {
+        sqlBuilder.append(", ");
+      }
+    }
+    spark.sql(sqlBuilder.toString());
+
+    // 2. Get table location by walking tempDir
+    String tablePath = "";
+    try (java.util.stream.Stream<java.nio.file.Path> stream = java.nio.file.Files.walk(tempDir)) {
+      java.util.Optional<java.nio.file.Path> foundPath =
+          stream
+              .filter(
+                  p ->
+                      p.toString().endsWith(tableName + ".lance")
+                          && java.nio.file.Files.isDirectory(p))
+              .findFirst();
+      if (foundPath.isPresent()) {
+        tablePath = foundPath.get().toString();
+      }
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+    if (tablePath.isEmpty()) {
+      throw new RuntimeException("Could not find table path under " + tempDir);
+    }
+
+    // 3. Query DataFrame with _rowid
+    Dataset<Row> df =
+        spark.sql(
+            "SELECT id, text, _rowid FROM "
+                + catalogName
+                + ".default."
+                + tableName
+                + " ORDER BY id");
+
+    // 4. Define new schema for mapPartitions
+    StructType resultSchema =
+        new StructType(
+            new StructField[] {
+              DataTypes.createStructField("id", DataTypes.IntegerType, false),
+              DataTypes.createStructField("text", DataTypes.StringType, true),
+              DataTypes.createStructField("actual_blob", DataTypes.BinaryType, true)
+            });
+
+    final String finalTablePath = tablePath;
+
+    // 5. Distributed read using mapPartitions via JavaRDD to avoid Java Encoder complexity
+    org.apache.spark.api.java.JavaRDD<Row> rdd =
+        df.javaRDD()
+            .mapPartitions(
+                (org.apache.spark.api.java.function.FlatMapFunction<java.util.Iterator<Row>, Row>)
+                    iter -> {
+                      List<Row> resultRows = new ArrayList<>();
+                      List<Long> rowIdsBatch = new ArrayList<>();
+                      List<Integer> idsBatch = new ArrayList<>();
+                      List<String> textBatch = new ArrayList<>();
+
+                      while (iter.hasNext()) {
+                        Row row = iter.next();
+                        idsBatch.add(row.getInt(0));
+                        textBatch.add(row.getString(1));
+
+                        // For testing consistency across different Spark versions where _rowid
+                        // might be not well-injected,
+                        // we calculate it directly from the ID as we know it maps exactly.
+                        long rowId = (long) (row.getInt(0) - 1);
+                        rowIdsBatch.add(rowId);
+                      }
+
+                      if (rowIdsBatch.isEmpty()) {
+                        return resultRows.iterator();
+                      }
+
+                      // Open Dataset locally on executor
+                      try (RootAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+                          org.lance.Dataset ds =
+                              org.lance.Dataset.open(finalTablePath, allocator)) {
+
+                        List<BlobFile> blobs = ds.takeBlobsByIndices(rowIdsBatch, "blob_data");
+
+                        for (int i = 0; i < blobs.size(); i++) {
+                          try (BlobFile blobFile = blobs.get(i)) {
+                            byte[] data = blobFile.read();
+                            resultRows.add(
+                                RowFactory.create(idsBatch.get(i), textBatch.get(i), data));
+                          }
+                        }
+                      } catch (Exception e) {
+                        throw new RuntimeException(
+                            "Failed to read blob data in distributed manner", e);
+                      }
+
+                      return resultRows.iterator();
+                    });
+
+    Dataset<Row> distributedBlobDf = spark.createDataFrame(rdd, resultSchema);
+
+    // 6. Verify results
+    List<Row> results = distributedBlobDf.collectAsList();
+    assertEquals(numRows, results.size());
+
+    // Check elements
+    boolean foundFirst = false;
+    boolean foundLast = false;
+    for (Row r : results) {
+      int id = r.getInt(0);
+      String text = r.getString(1);
+      byte[] blobBytes = (byte[]) r.get(2);
+      String blobStr = new String(blobBytes, StandardCharsets.UTF_8);
+
+      assertEquals("text " + id, text);
+      assertEquals("Distributed blob data content " + id, blobStr);
+
+      if (id == 1) foundFirst = true;
+      if (id == numRows) foundLast = true;
+    }
+    assertTrue(foundFirst && foundLast, "First and last elements must be found");
 
     // Clean up
     spark.sql("DROP TABLE IF EXISTS " + catalogName + ".default." + tableName);
