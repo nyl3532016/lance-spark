@@ -24,9 +24,6 @@ import org.lance.spark.LanceRuntime;
 import org.lance.spark.LanceSparkReadOptions;
 import org.lance.spark.read.LanceInputPartition;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
 import org.apache.arrow.vector.ipc.ArrowReader;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
@@ -35,56 +32,22 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class LanceFragmentScanner implements AutoCloseable {
-  private static LoadingCache<CacheKey, Map<Integer, Fragment>> LOADING_CACHE =
-      CacheBuilder.newBuilder()
-          .maximumSize(100)
-          .expireAfterAccess(1, TimeUnit.HOURS)
-          .build(
-              new CacheLoader<CacheKey, Map<Integer, Fragment>>() {
-                @Override
-                public Map<Integer, Fragment> load(CacheKey key) throws Exception {
-                  LanceSparkReadOptions readOptions = key.getReadOptions();
-
-                  // Build ReadOptions with merged storage options and credential refresh provider
-                  Map<String, String> merged =
-                      LanceRuntime.mergeStorageOptions(
-                          readOptions.getStorageOptions(), key.getInitialStorageOptions());
-                  LanceNamespaceStorageOptionsProvider provider =
-                      LanceRuntime.getOrCreateStorageOptionsProvider(
-                          key.getNamespaceImpl(),
-                          key.getNamespaceProperties(),
-                          readOptions.getTableId());
-
-                  ReadOptions.Builder builder = new ReadOptions.Builder().setStorageOptions(merged);
-                  if (provider != null) {
-                    builder.setStorageOptionsProvider(provider);
-                  }
-
-                  Dataset dataset =
-                      Dataset.open()
-                          .allocator(LanceRuntime.allocator())
-                          .uri(readOptions.getDatasetUri())
-                          .readOptions(builder.build())
-                          .build();
-                  return dataset.getFragments().stream()
-                      .collect(Collectors.toMap(Fragment::getId, f -> f));
-                }
-              });
+  private final Dataset dataset;
   private final LanceScanner scanner;
   private final int fragmentId;
   private final boolean withFragemtId;
   private final LanceInputPartition inputPartition;
 
   private LanceFragmentScanner(
+      Dataset dataset,
       LanceScanner scanner,
       int fragmentId,
       boolean withFragmentId,
       LanceInputPartition inputPartition) {
+    this.dataset = dataset;
     this.scanner = scanner;
     this.fragmentId = fragmentId;
     this.withFragemtId = withFragmentId;
@@ -92,17 +55,34 @@ public class LanceFragmentScanner implements AutoCloseable {
   }
 
   public static LanceFragmentScanner create(int fragmentId, LanceInputPartition inputPartition) {
+    Dataset dataset = null;
     try {
       LanceSparkReadOptions readOptions = inputPartition.getReadOptions();
-      CacheKey key =
-          new CacheKey(
-              readOptions,
-              inputPartition.getScanId(),
-              inputPartition.getInitialStorageOptions(),
+      Map<String, String> merged =
+          LanceRuntime.mergeStorageOptions(
+              readOptions.getStorageOptions(), inputPartition.getInitialStorageOptions());
+      LanceNamespaceStorageOptionsProvider provider =
+          LanceRuntime.getOrCreateStorageOptionsProvider(
               inputPartition.getNamespaceImpl(),
-              inputPartition.getNamespaceProperties());
-      Map<Integer, Fragment> cachedFragments = LOADING_CACHE.get(key);
-      Fragment fragment = cachedFragments.get(fragmentId);
+              inputPartition.getNamespaceProperties(),
+              readOptions.getTableId());
+
+      ReadOptions.Builder builder = new ReadOptions.Builder().setStorageOptions(merged);
+      if (provider != null) {
+        builder.setStorageOptionsProvider(provider);
+      }
+
+      dataset =
+          Dataset.open()
+              .allocator(LanceRuntime.allocator())
+              .uri(readOptions.getDatasetUri())
+              .readOptions(builder.build())
+              .build();
+      Fragment fragment = dataset.getFragment(fragmentId);
+      if (fragment == null) {
+        throw new IllegalStateException("Fragment " + fragmentId + " not found");
+      }
+
       ScanOptions.Builder scanOptions = new ScanOptions.Builder();
       scanOptions.columns(getColumnNames(inputPartition.getSchema()));
       if (inputPartition.getWhereCondition().isPresent()) {
@@ -130,8 +110,19 @@ public class LanceFragmentScanner implements AutoCloseable {
       boolean withFragmentId =
           inputPartition.getSchema().getFieldIndex(LanceConstant.FRAGMENT_ID).nonEmpty();
       return new LanceFragmentScanner(
-          fragment.newScan(scanOptions.build()), fragmentId, withFragmentId, inputPartition);
+          dataset,
+          fragment.newScan(scanOptions.build()),
+          fragmentId,
+          withFragmentId,
+          inputPartition);
     } catch (Throwable throwable) {
+      if (dataset != null) {
+        try {
+          dataset.close();
+        } catch (Throwable closeError) {
+          throwable.addSuppressed(closeError);
+        }
+      }
       throw new RuntimeException(throwable);
     }
   }
@@ -145,12 +136,30 @@ public class LanceFragmentScanner implements AutoCloseable {
 
   @Override
   public void close() throws IOException {
+    Throwable primary = null;
     if (scanner != null) {
       try {
         scanner.close();
-      } catch (Exception e) {
-        throw new IOException(e);
+      } catch (Throwable t) {
+        primary = t;
       }
+    }
+    if (dataset != null) {
+      try {
+        dataset.close();
+      } catch (Throwable t) {
+        if (primary != null) {
+          primary.addSuppressed(t);
+        } else {
+          primary = t;
+        }
+      }
+    }
+    if (primary != null) {
+      if (primary instanceof IOException) {
+        throw (IOException) primary;
+      }
+      throw new IOException(primary);
     }
   }
 
@@ -189,57 +198,5 @@ public class LanceFragmentScanner implements AutoCloseable {
     return Arrays.stream(schema.fields())
         .map(StructField::name)
         .anyMatch(name -> name.equals(LanceConstant.ROW_ADDRESS));
-  }
-
-  private static class CacheKey {
-    private final LanceSparkReadOptions readOptions;
-    private final String scanId;
-    private final Map<String, String> initialStorageOptions;
-    private final String namespaceImpl;
-    private final Map<String, String> namespaceProperties;
-
-    CacheKey(
-        LanceSparkReadOptions readOptions,
-        String scanId,
-        Map<String, String> initialStorageOptions,
-        String namespaceImpl,
-        Map<String, String> namespaceProperties) {
-      this.readOptions = readOptions;
-      this.scanId = scanId;
-      this.initialStorageOptions = initialStorageOptions;
-      this.namespaceImpl = namespaceImpl;
-      this.namespaceProperties = namespaceProperties;
-    }
-
-    public LanceSparkReadOptions getReadOptions() {
-      return readOptions;
-    }
-
-    public Map<String, String> getInitialStorageOptions() {
-      return initialStorageOptions;
-    }
-
-    public String getNamespaceImpl() {
-      return namespaceImpl;
-    }
-
-    public Map<String, String> getNamespaceProperties() {
-      return namespaceProperties;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (o == null || getClass() != o.getClass()) {
-        return false;
-      }
-      CacheKey cacheKey = (CacheKey) o;
-      return Objects.equals(readOptions, cacheKey.readOptions)
-          && Objects.equals(scanId, cacheKey.scanId);
-    }
-
-    @Override
-    public int hashCode() {
-      return Objects.hash(readOptions, scanId);
-    }
   }
 }
